@@ -935,6 +935,23 @@ if ! command -v just >/dev/null 2>&1; then
     done
 fi
 
+# NixOS-style: Ensure Nix profile packages are in PATH (system-wide packages)
+# This makes all nix profile installed packages available globally
+if command -v nix >/dev/null 2>&1; then
+    # Add Nix profile bin directories to PATH
+    if [ -n "$HOME" ] && [ -d "$HOME/.nix-profile/bin" ]; then
+        export PATH="$HOME/.nix-profile/bin:$PATH"
+    fi
+    # System-wide Nix profile (for root)
+    if [ -d /nix/var/nix/profiles/default/bin ]; then
+        export PATH="/nix/var/nix/profiles/default/bin:$PATH"
+    fi
+    # Per-user profiles
+    if [ -n "$HOME" ] && [ -d "$HOME/.local/state/nix/profiles/profile/bin" ]; then
+        export PATH="$HOME/.local/state/nix/profiles/profile/bin:$PATH"
+    fi
+fi
+
 # Set default LOCAL_AI environment variables (if not already set)
 export LOCAL_AI="${LOCAL_AI:-http://localhost:8080}"
 export LOCALAI_PORT="${LOCALAI_PORT:-8080}"
@@ -1189,9 +1206,9 @@ log "  ✓ LOCAL_AI command created at $LOCAL_AI_WRAPPER"
 log "  Usage: LOCAL_AI [PORT] [MODEL_DIR] [CONFIG_DIR]"
 log ""
 
-# Install Kali tools globally (NixOS-style) by default
-log "  -> Installing Kali tools globally (NixOS-style)..."
-if command_exists nix && command_exists just; then
+# Install Kali tools globally (NixOS-style) by default - PRE-INSTALLED
+log "  -> Pre-installing Kali tools globally (NixOS-style) in background..."
+if command_exists nix; then
     # Enable Nix commands
     if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true
@@ -1237,54 +1254,61 @@ if command_exists nix && command_exists just; then
     fi
     
     if [ -n "$FLAKE_REF" ] && [ -n "$FLAKE_DIR" ]; then
-        # Build the package and create symlinks in /usr/local/bin
-        TEMP_BUILD_RESULT="/tmp/kali-tools-result"
-        TEMP_FILES+=("$TEMP_BUILD_RESULT")
+        # NixOS-style: Install via nix profile (system-wide, like NixOS environment.systemPackages)
+        log "  -> Installing via nix profile (NixOS-style system-wide installation)..."
         
-        if nix_with_timeout 300 nix build "$FLAKE_REF" --out-link "$TEMP_BUILD_RESULT" 2>/dev/null; then
-            log "  ✓ Kali tools package built successfully"
+        # Check if already installed
+        if nix profile list 2>/dev/null | grep -q "kali-tools"; then
+            log "  ✓ Kali tools already installed in Nix profile"
+        else
+            # Install in background with timeout
+            INSTALL_LOG=$(mktemp)
+            TEMP_FILES+=("$INSTALL_LOG")
             
-            if [ -d "$TEMP_BUILD_RESULT/bin" ]; then
-                INSTALLED_COUNT=0
-                # Handle case where bin directory exists but might be empty
-                if ls "$TEMP_BUILD_RESULT/bin"/* >/dev/null 2>&1; then
-                    for tool in "$TEMP_BUILD_RESULT/bin"/*; do
-                        if [ -f "$tool" ] && [ -x "$tool" ]; then
-                            TOOL_NAME=$(basename "$tool")
-                            if [ ! -f "/usr/local/bin/$TOOL_NAME" ] || [ "$(readlink -f "/usr/local/bin/$TOOL_NAME" 2>/dev/null)" != "$(readlink -f "$tool")" ]; then
-                                ln -sf "$tool" "/usr/local/bin/$TOOL_NAME" 2>/dev/null || true
-                                INSTALLED_COUNT=$((INSTALLED_COUNT + 1))
-                            fi
-                        fi
-                    done
-                fi
+            log "  -> Installing kali-tools package (this may take a few minutes)..."
+            if nix_with_timeout 600 nix profile install "$FLAKE_REF" >"$INSTALL_LOG" 2>&1; then
+                log "  ✓ Kali tools installed successfully via Nix profile"
                 
-                if [ "$INSTALLED_COUNT" -gt 0 ]; then
-                    log "  ✓ Installed $INSTALLED_COUNT Kali tools to /usr/local/bin (system-wide)"
-                else
-                    log "  ✓ Kali tools already installed in /usr/local/bin"
+                # Also create symlinks in /usr/local/bin for immediate availability (NixOS-style)
+                TEMP_BUILD_RESULT="/tmp/kali-tools-result"
+                TEMP_FILES+=("$TEMP_BUILD_RESULT")
+                
+                if nix_with_timeout 300 nix build "$FLAKE_REF" --out-link "$TEMP_BUILD_RESULT" 2>/dev/null; then
+                    if [ -d "$TEMP_BUILD_RESULT/bin" ] && ls "$TEMP_BUILD_RESULT/bin"/* >/dev/null 2>&1; then
+                        INSTALLED_COUNT=0
+                        for tool in "$TEMP_BUILD_RESULT/bin"/*; do
+                            if [ -f "$tool" ] && [ -x "$tool" ]; then
+                                TOOL_NAME=$(basename "$tool")
+                                if [ ! -f "/usr/local/bin/$TOOL_NAME" ] || [ "$(readlink -f "/usr/local/bin/$TOOL_NAME" 2>/dev/null)" != "$(readlink -f "$tool")" ]; then
+                                    ln -sf "$tool" "/usr/local/bin/$TOOL_NAME" 2>/dev/null || true
+                                    INSTALLED_COUNT=$((INSTALLED_COUNT + 1))
+                                fi
+                            fi
+                        done
+                        if [ "$INSTALLED_COUNT" -gt 0 ]; then
+                            log "  ✓ Created $INSTALLED_COUNT symlinks in /usr/local/bin for immediate access"
+                        fi
+                    fi
                 fi
             else
-                log_warning "Built package doesn't have bin directory, skipping symlink creation"
+                log_error "Failed to install kali-tools via Nix profile"
+                log_error "Installation log:"
+                tail -n 20 "$INSTALL_LOG" >&2 || true
+                log_warning "Tools will be available via Nix profile PATH once installed"
             fi
-        else
-            log_warning "Failed to build kali-tools package, skipping global installation"
-            log "  You can install tools later with: just install-kali-tools-global"
         fi
     else
-        log_warning "Could not find or download flake.nix, skipping global installation"
-        log "  You can install tools later with: just install-kali-tools-global"
+        log_warning "Could not find or download flake.nix, skipping Kali tools installation"
     fi
 else
-    log_warning "Nix or just not available, skipping Kali tools installation"
-    log "  You can install tools later with: just install-kali-tools-global"
+    log_warning "Nix not available, skipping Kali tools installation"
 fi
 
 log ""
 
-# Install cool terminal tools globally (NixOS-style) by default
-log "  -> Installing cool terminal tools globally (NixOS-style)..."
-if command_exists nix && command_exists just; then
+# Install cool terminal tools globally (NixOS-style) by default - PRE-INSTALLED
+log "  -> Pre-installing cool terminal tools globally (NixOS-style) in background..."
+if command_exists nix; then
     # Enable Nix commands
     if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true
@@ -1330,47 +1354,54 @@ if command_exists nix && command_exists just; then
     fi
     
     if [ -n "$FLAKE_REF" ] && [ -n "$FLAKE_DIR" ]; then
-        # Build the package and create symlinks in /usr/local/bin
-        TEMP_BUILD_RESULT="/tmp/cool-terminal-result"
-        TEMP_FILES+=("$TEMP_BUILD_RESULT")
+        # NixOS-style: Install via nix profile (system-wide, like NixOS environment.systemPackages)
+        log "  -> Installing via nix profile (NixOS-style system-wide installation)..."
         
-        if nix_with_timeout 300 nix build "$FLAKE_REF" --out-link "$TEMP_BUILD_RESULT" 2>/dev/null; then
-            log "  ✓ Cool terminal package built successfully"
+        # Check if already installed
+        if nix profile list 2>/dev/null | grep -q "cool-terminal"; then
+            log "  ✓ Cool terminal tools already installed in Nix profile"
+        else
+            # Install in background with timeout
+            INSTALL_LOG=$(mktemp)
+            TEMP_FILES+=("$INSTALL_LOG")
             
-            if [ -d "$TEMP_BUILD_RESULT/bin" ]; then
-                INSTALLED_COUNT=0
-                # Handle case where bin directory exists but might be empty
-                if ls "$TEMP_BUILD_RESULT/bin"/* >/dev/null 2>&1; then
-                    for tool in "$TEMP_BUILD_RESULT/bin"/*; do
-                        if [ -f "$tool" ] && [ -x "$tool" ]; then
-                            TOOL_NAME=$(basename "$tool")
-                            if [ ! -f "/usr/local/bin/$TOOL_NAME" ] || [ "$(readlink -f "/usr/local/bin/$TOOL_NAME" 2>/dev/null)" != "$(readlink -f "$tool")" ]; then
-                                ln -sf "$tool" "/usr/local/bin/$TOOL_NAME" 2>/dev/null || true
-                                INSTALLED_COUNT=$((INSTALLED_COUNT + 1))
-                            fi
-                        fi
-                    done
-                fi
+            log "  -> Installing cool-terminal package (this may take a few minutes)..."
+            if nix_with_timeout 600 nix profile install "$FLAKE_REF" >"$INSTALL_LOG" 2>&1; then
+                log "  ✓ Cool terminal tools installed successfully via Nix profile"
                 
-                if [ "$INSTALLED_COUNT" -gt 0 ]; then
-                    log "  ✓ Installed $INSTALLED_COUNT cool terminal tools to /usr/local/bin (system-wide)"
-                else
-                    log "  ✓ Cool terminal tools already installed in /usr/local/bin"
+                # Also create symlinks in /usr/local/bin for immediate availability (NixOS-style)
+                TEMP_BUILD_RESULT="/tmp/cool-terminal-result"
+                TEMP_FILES+=("$TEMP_BUILD_RESULT")
+                
+                if nix_with_timeout 300 nix build "$FLAKE_REF" --out-link "$TEMP_BUILD_RESULT" 2>/dev/null; then
+                    if [ -d "$TEMP_BUILD_RESULT/bin" ] && ls "$TEMP_BUILD_RESULT/bin"/* >/dev/null 2>&1; then
+                        INSTALLED_COUNT=0
+                        for tool in "$TEMP_BUILD_RESULT/bin"/*; do
+                            if [ -f "$tool" ] && [ -x "$tool" ]; then
+                                TOOL_NAME=$(basename "$tool")
+                                if [ ! -f "/usr/local/bin/$TOOL_NAME" ] || [ "$(readlink -f "/usr/local/bin/$TOOL_NAME" 2>/dev/null)" != "$(readlink -f "$tool")" ]; then
+                                    ln -sf "$tool" "/usr/local/bin/$TOOL_NAME" 2>/dev/null || true
+                                    INSTALLED_COUNT=$((INSTALLED_COUNT + 1))
+                                fi
+                            fi
+                        done
+                        if [ "$INSTALLED_COUNT" -gt 0 ]; then
+                            log "  ✓ Created $INSTALLED_COUNT symlinks in /usr/local/bin for immediate access"
+                        fi
+                    fi
                 fi
             else
-                log_warning "Built package doesn't have bin directory, skipping symlink creation"
+                log_error "Failed to install cool-terminal via Nix profile"
+                log_error "Installation log:"
+                tail -n 20 "$INSTALL_LOG" >&2 || true
+                log_warning "Tools will be available via Nix profile PATH once installed"
             fi
-        else
-            log_warning "Failed to build cool-terminal package, skipping global installation"
-            log "  You can install tools later with: just install-cool-terminal-global"
         fi
     else
         log_warning "Could not find or download flake.nix, skipping cool terminal installation"
-        log "  You can install tools later with: just install-cool-terminal-global"
     fi
 else
-    log_warning "Nix or just not available, skipping cool terminal installation"
-    log "  You can install tools later with: just install-cool-terminal-global"
+    log_warning "Nix not available, skipping cool terminal installation"
 fi
 
 log ""
@@ -1799,11 +1830,15 @@ log "  nix --version"
 log "  just --version"
 log "  just --list  # Should show available commands from default justfile"
 log ""
-log "IMPORTANT: To apply flake.nix updates automatically, run:"
+log "IMPORTANT: All packages are pre-installed globally via Nix (NixOS-style)"
+log "Tools are available system-wide and work just like NixOS"
+log ""
+log "To update packages from flake.nix, run:"
 log "  just update-from-flake  # Updates all packages from latest flake.nix"
 log ""
-log "The install script automatically updates flake inputs and reinstalls"
-log "packages when flake.nix is detected, ensuring latest changes are applied."
+log "To verify installation, run:"
+log "  just verify-kali-tools      # Verify Kali tools"
+log "  just verify-cool-terminal   # Verify cool terminal tools"
 log ""
 log "=========================================="
 log "Alpine Linux / Chromebook Notes"

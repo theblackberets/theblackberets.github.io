@@ -487,17 +487,25 @@ if command -v nix >/dev/null 2>&1; then
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true
     fi
     
-    # Remove kali-tools from Nix profile
-    if nix profile list 2>/dev/null | grep -q "kali-tools"; then
+    # Remove kali-tools from Nix profile (NixOS-style installation)
+    # Handle multiple profile entries and be robust
+    KALI_PROFILE_ENTRIES=$(nix profile list 2>/dev/null | grep -i "kali-tools" | awk '{print $1}' || true)
+    if [ -n "$KALI_PROFILE_ENTRIES" ]; then
         log "  -> Removing kali-tools from Nix profile..."
-        nix profile remove $(nix profile list 2>/dev/null | grep "kali-tools" | awk '{print $1}') >/dev/null 2>&1 || true
+        for entry in $KALI_PROFILE_ENTRIES; do
+            nix profile remove "$entry" >/dev/null 2>&1 || true
+        done
         log "  ✓ kali-tools removed from Nix profile"
     fi
     
-    # Remove cool-terminal from Nix profile
-    if nix profile list 2>/dev/null | grep -q "cool-terminal"; then
+    # Remove cool-terminal from Nix profile (NixOS-style installation)
+    # Handle multiple profile entries and be robust
+    COOL_PROFILE_ENTRIES=$(nix profile list 2>/dev/null | grep -i "cool-terminal" | awk '{print $1}' || true)
+    if [ -n "$COOL_PROFILE_ENTRIES" ]; then
         log "  -> Removing cool-terminal from Nix profile..."
-        nix profile remove $(nix profile list 2>/dev/null | grep "cool-terminal" | awk '{print $1}') >/dev/null 2>&1 || true
+        for entry in $COOL_PROFILE_ENTRIES; do
+            nix profile remove "$entry" >/dev/null 2>&1 || true
+        done
         log "  ✓ cool-terminal removed from Nix profile"
     fi
 fi
